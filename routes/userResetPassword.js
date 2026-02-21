@@ -12,10 +12,12 @@ const getFirestore = () => {
 
 router.post('/user/reset-password', async (req, res) => {
   console.log('REQUEST BODY:', req.body);
+
   try {
     const db = getFirestore();
     const { phone, newPassword } = req.body;
 
+    // ✅ Validate input
     if (!phone || !newPassword) {
       return res.status(400).json({
         success: false,
@@ -23,42 +25,80 @@ router.post('/user/reset-password', async (req, res) => {
       });
     }
 
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters',
+      });
+    }
+
+    // ✅ Clean phone
     const cleanPhone = phone.replace(/\D/g, '');
-    const email = `${cleanPhone}@userapp.com`;
-    let uid = null;
+
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number',
+      });
+    }
+
+    // ✅ Format Indian phone properly
+    const formattedPhone = cleanPhone.startsWith('91')
+      ? `+${cleanPhone}`
+      : `+91${cleanPhone}`;
+
+    let uid;
 
     try {
-      const user = await admin.auth().getUserByEmail(email);
+      // ✅ Try to find user by phone (best practice)
+      const user = await admin.auth().getUserByPhoneNumber(formattedPhone);
       uid = user.uid;
-      await admin.auth().updateUser(user.uid, { password: String(newPassword) });
-    } catch (e) {
-      if (e.code === 'auth/user-not-found') {
-        const created = await admin.auth().createUser({
-          email,
-          phoneNumber: `+91${cleanPhone}`,
+
+      await admin.auth().updateUser(uid, {
+        password: String(newPassword),
+      });
+
+      console.log('Password updated for:', formattedPhone);
+
+    } catch (error) {
+
+      if (error.code === 'auth/user-not-found') {
+        console.log('User not found. Creating new user...');
+
+        const newUser = await admin.auth().createUser({
+          phoneNumber: formattedPhone,
           password: String(newPassword),
         });
-        uid = created.uid;
+
+        uid = newUser.uid;
       } else {
-        throw e;
+        console.error('Firebase Auth Error:', error);
+        return res.status(500).json({
+          success: false,
+          message: error.message,
+        });
       }
     }
 
-    try {
-      if (uid) {
-        await db.collection('users').doc(uid).set({ isResetpassword: false }, { merge: true });
-      }
-    } catch (e) {
-      console.warn('Failed to clear isResetpassword flag for uid', uid, e.message || e);
+    // ✅ Update Firestore document
+    if (uid) {
+      await db.collection('users').doc(uid).set(
+        { isResetpassword: false },
+        { merge: true }
+      );
     }
 
-    return res.json({ success: true, message: 'Password updated' });
+    return res.json({
+      success: true,
+      message: 'Password updated successfully',
+    });
+
   } catch (err) {
-    console.error('RESET PASSWORD ERROR:', err && err.message ? err.message : err);
-    const firebaseMissing = err.message === 'Firebase Admin SDK is not initialized';
-    return res.status(firebaseMissing ? 503 : 500).json({
+    console.error('RESET PASSWORD ERROR FULL:', err);
+
+    return res.status(500).json({
       success: false,
-      message: firebaseMissing ? 'Firebase Admin SDK is not configured' : 'Password reset failed',
+      message: err.message || 'Password reset failed',
     });
   }
 });

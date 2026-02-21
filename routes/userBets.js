@@ -11,25 +11,25 @@ router.post('/singledigitbets', async (req, res) => {
   try {
     const authHeader = (req.headers.authorization || '').toString();
 
-    if (!authHeader.startsWith('Bearer '))
+    if (!authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
 
     const idToken = authHeader.split('Bearer ')[1].trim();
     const decoded = await admin.auth().verifyIdToken(idToken);
 
     const { uid, code, gameId, gameName, bets } = req.body;
 
-    if (!decoded.uid || decoded.uid !== uid)
+    if (!decoded.uid || decoded.uid !== uid) {
       return res.status(403).json({ error: 'Caller UID does not match provided uid' });
+    }
 
-    if (!uid || !Array.isArray(bets) || code !== 'SD' || !gameId)
+    if (!uid || !Array.isArray(bets) || code !== 'SD' || !gameId) {
       return res.status(400).json({ error: 'Invalid payload' });
+    }
 
     const db = admin.firestore();
 
-    // ======================
-    // ✅ Parse Bets
-    // ======================
     const parsedBets = bets.map((b) => ({
       number: String(b.number),
       points: Number(b.points),
@@ -38,33 +38,39 @@ router.post('/singledigitbets', async (req, res) => {
 
     const totalAmount = parsedBets.reduce(
       (sum, b) => sum + (Number.isFinite(b.points) ? b.points : 0),
-      0
+      0,
     );
 
-    // ======================
-    // 🔥 Time Validation (IST)
-    // ======================
     const gameRef = db.collection('games').doc(String(gameId));
     const gameSnap = await gameRef.get();
 
-    if (!gameSnap.exists)
+    if (!gameSnap.exists) {
       return res.status(400).json({ error: 'Game not found' });
+    }
 
     const gameData = gameSnap.data() || {};
     const openTimeStr = gameData.openTime || null;
     const closeTimeStr = gameData.closeTime || null;
 
     const parseTime12h = (t) => {
-      if (!t) return null;
+      if (!t) {
+        return null;
+      }
       const m = t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-      if (!m) return null;
+      if (!m) {
+        return null;
+      }
 
       let h = parseInt(m[1], 10);
       const min = parseInt(m[2], 10);
       const mer = m[3].toUpperCase();
 
-      if (h === 12) h = 0;
-      if (mer === 'PM') h += 12;
+      if (h === 12) {
+        h = 0;
+      }
+      if (mer === 'PM') {
+        h += 12;
+      }
 
       return { hours: h, minutes: min };
     };
@@ -76,44 +82,38 @@ router.post('/singledigitbets', async (req, res) => {
 
     const isAfterTime = (timeStr) => {
       const parsed = parseTime12h(timeStr);
-      if (!parsed) return false;
+      if (!parsed) {
+        return false;
+      }
+
       const target = new Date(nowIst);
       target.setHours(parsed.hours, parsed.minutes, 0, 0);
+
       return nowIst.getTime() > target.getTime();
     };
 
-    if (parsedBets.some((b) => b.game === 'open') && isAfterTime(openTimeStr))
+    if (parsedBets.some((b) => b.game === 'open') && isAfterTime(openTimeStr)) {
       return res.status(400).json({ error: 'your request is delayed for open bit' });
+    }
 
-    if (parsedBets.some((b) => b.game === 'close') && isAfterTime(closeTimeStr))
+    if (parsedBets.some((b) => b.game === 'close') && isAfterTime(closeTimeStr)) {
       return res.status(400).json({ error: 'your request is delayed for close bit' });
+    }
 
-    // ======================
-    // 🔥 Helper: IST Date ID
-    // ======================
-    const getIstDateId = () => {
-      const dd = String(nowIst.getDate()).padStart(2, '0');
-      const mm = String(nowIst.getMonth() + 1).padStart(2, '0');
-      const yyyy = nowIst.getFullYear();
-      return `${dd}-${mm}-${yyyy}`;
-    };
-
-    const dateId = getIstDateId();
-
-    // ======================
-    // 🔥 Transaction Start
-    // ======================
     const userRef = db.collection('users').doc(uid);
 
     await db.runTransaction(async (tx) => {
       const userSnap = await tx.get(userRef);
-      if (!userSnap.exists) throw new Error('User not found');
+      if (!userSnap.exists) {
+        throw new Error('User not found');
+      }
 
       const userData = userSnap.data();
       let wallet = Number(userData.wallet || 0);
 
-      if (wallet < totalAmount)
+      if (wallet < totalAmount) {
         throw new Error('Insufficient wallet balance');
+      }
 
       let currBalance = wallet;
       const todaysBetsRef = db.collection('todaysBets');
@@ -124,7 +124,6 @@ router.post('/singledigitbets', async (req, res) => {
         const preBalance = currBalance;
         const postBalance = currBalance - amount;
 
-        // 1️⃣ Save Bet
         const betDoc = {
           amount,
           gameId: String(gameId),
@@ -145,28 +144,9 @@ router.post('/singledigitbets', async (req, res) => {
 
         tx.set(todaysBetsRef.doc(), betDoc);
 
-        // 2️⃣ Update Game Chart
-        const numberRef = db
-          .collection('gamechart')
-          .doc(dateId)
-          .collection(gameName)
-          .doc(code)
-          .collection('values')  
-          .doc(String(b.number));
-
-        tx.set(
-          numberRef,
-          {
-            totalAmount: admin.firestore.FieldValue.increment(amount),
-            updatedAt: serverTs,
-          },
-          { merge: true }
-        );
-
         currBalance = postBalance;
       }
 
-      // 3️⃣ Update Wallet
       tx.update(userRef, {
         wallet: currBalance,
         updatedAt: serverTs,
@@ -177,14 +157,12 @@ router.post('/singledigitbets', async (req, res) => {
       ok: true,
       deducted: totalAmount,
     });
-
   } catch (err) {
     return res.status(500).json({
       error: err.message || 'Internal Server Error',
     });
   }
 });
-
 
 router.post('/jodidigitsbets', async (req, res) => {
   try {
