@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/gback
 EnvironmentFile=/etc/gback.env
+Environment=NODE_ENV=production
+LimitNOFILE=100000
 ExecStart=/usr/bin/node /opt/gback/index.js
 Restart=always
 RestartSec=3

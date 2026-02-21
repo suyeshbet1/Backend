@@ -18,6 +18,18 @@ For a small/medium Node backend:
   - Optional: allow **TCP 4000** only if you want to expose Node directly (not recommended)
 - **IP**: Reserve a **static external IP** if you want stable DNS
 
+### If your traffic is heavy (important)
+
+You mentioned **60–70 requests/second per user**. What matters for sizing is your **total peak requests/second** across all users and what each request does (Firestore reads/writes, Firebase Auth verify, heavy loops, etc.).
+
+If you expect **hundreds to thousands of total RPS**, start with:
+
+- **Recommended starting point**: `e2-standard-4` (4 vCPU, 16 GB RAM)
+- If CPU becomes the bottleneck (lots of JSON + auth verification): `c3-standard-4` / `n2-standard-4`
+- If you expect very high concurrency or burst traffic: `e2-standard-8` (8 vCPU, 32 GB RAM)
+
+For production uptime, prefer **2+ VMs behind a Load Balancer** (Managed Instance Group) instead of a single VM.
+
 ## 2) Service Account (important)
 
 Attach a Service Account to the VM with least-privilege access.
@@ -32,6 +44,14 @@ If you also use Firebase Auth Admin SDK features:
 
 Avoid creating/downloading private keys for production when possible.
 
+## 2.1) Production security checklist (do this)
+
+- Do **NOT** commit `.env` (this repo now ignores it).
+- Use **ADC** on the VM (attach Service Account) instead of a JSON key.
+- Restrict firewall: open only `80/443` to the world.
+- Put Node behind Nginx and bind Node to localhost only (recommended).
+- Set OS limits (open files) so the service can handle many connections.
+
 ## 3) Create the VM
 
 In GCP Console:
@@ -41,6 +61,19 @@ In GCP Console:
 3. Choose machine type (see above)
 4. Attach the Service Account (above)
 5. Firewall: allow HTTP/HTTPS
+
+### Step-by-step (single VM, production-style)
+
+1. Create VM with Ubuntu 22.04 LTS
+2. Attach Service Account with required roles
+3. Allow inbound `80/443` only
+4. SSH → install Node + Nginx
+5. Clone repo into `/opt/gback`
+6. Install deps using `npm ci --omit=dev`
+7. Create `/etc/gback.env` with `PORT=4000`
+8. Install systemd unit and start it
+9. Install Nginx reverse proxy and reload
+10. Validate `/health` and your API routes
 
 ## 4) On the VM: install Node + git
 
@@ -56,6 +89,15 @@ sudo apt-get install -y nodejs
 
 node -v
 npm -v
+
+# (Recommended) basic hardening & limits for high concurrency
+sudo tee /etc/security/limits.d/99-gback.conf > /dev/null <<'EOF'
+www-data soft nofile 100000
+www-data hard nofile 100000
+EOF
+
+sudo sysctl -w net.core.somaxconn=4096
+sudo sysctl -w net.ipv4.ip_local_port_range="10240 65535"
 ```
 
 ## 5) Deploy code
@@ -122,6 +164,32 @@ sudo systemctl reload nginx
 ```
 
 Now your API is reachable on port 80 at `/` (and your app listens internally on `127.0.0.1:4000`).
+
+### Validate
+
+On the VM:
+
+```bash
+curl -i http://127.0.0.1:4000/health
+curl -i http://localhost/health
+
+sudo systemctl status gback --no-pager
+journalctl -u gback -n 200 --no-pager
+```
+
+## 8.1) If you need even more throughput
+
+Single VM will eventually hit limits. The next production step is:
+
+- Put the app in a **Managed Instance Group (MIG)** with **2+ instances**
+- Put an **HTTP(S) Load Balancer** in front
+- Use a health check hitting `/health`
+
+This gives:
+
+- Horizontal scaling
+- Zero-downtime rolling updates
+- No single point of failure
 
 ## 9) HTTPS (optional but recommended)
 
