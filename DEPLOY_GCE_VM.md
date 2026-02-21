@@ -70,6 +70,9 @@ cd /opt/gback
 git clone <YOUR_REPO_URL> .
 
 npm ci --omit=dev
+
+# systemd service runs as www-data (default template)
+sudo chown -R www-data:www-data /opt/gback
 ```
 
 ## 6) Environment variables
