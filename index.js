@@ -12,8 +12,8 @@ const {
 	PORT = 4000,
 } = process.env;
 
-if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
-	if (!admin.apps.length) {
+if (!admin.apps.length) {
+	if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
 		admin.initializeApp({
 			credential: admin.credential.cert({
 				projectId: FIREBASE_PROJECT_ID,
@@ -21,9 +21,11 @@ if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
 				privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
 			}),
 		});
+	} else {
+		// On GCE/GKE/Cloud Run, this uses the attached service account (Application Default Credentials).
+		admin.initializeApp();
+		console.warn('Firebase explicit credentials not set; using Application Default Credentials.');
 	}
-} else {
-	console.warn('Firebase credentials are missing. Check your .env file.');
 }
 
 const userBetsRoutes = require('./routes/userBets');
