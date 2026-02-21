@@ -104,14 +104,29 @@ sudo sysctl -w net.ipv4.ip_local_port_range="10240 65535"
 
 Option A (clone from GitHub):
 
+Important:
+
+- If you run `git clone <repo>` **without** a trailing dot, Git creates a folder (example: `/opt/gback/Backend`). You must `cd` into it.
+- `npm ci` requires `package-lock.json` to exist.
+
 ```bash
 sudo mkdir -p /opt/gback
 sudo chown $USER:$USER /opt/gback
 
 cd /opt/gback
+
+# Option 1 (recommended): clone into current directory
 git clone <YOUR_REPO_URL> .
 
+# Option 2: clone into a folder (matches your example output)
+# git clone <YOUR_REPO_URL>
+# cd Backend
+
+# Install dependencies
 npm ci --omit=dev
+
+# If `npm ci` fails for any reason, use:
+# npm install --omit=dev
 
 # systemd service runs as www-data (default template)
 sudo chown -R www-data:www-data /opt/gback
@@ -120,6 +135,7 @@ sudo chown -R www-data:www-data /opt/gback
 ## 6) Environment variables
 
 ### Recommended on GCE (ADC)
+
 Do **not** set `FIREBASE_*`.
 Only set:
 
