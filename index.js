@@ -9,6 +9,7 @@ const {
 	FIREBASE_PROJECT_ID,
 	FIREBASE_CLIENT_EMAIL,
 	FIREBASE_PRIVATE_KEY,
+	HOST = '0.0.0.0',
 	PORT = 4000,
 } = process.env;
 
@@ -53,6 +54,6 @@ app.get('/health', (req, res) => {
 	res.json({ status: 'ok' });
 });
 
-app.listen(PORT,"0.0.0.0", () => {
-	console.log(`Server running on port ${PORT}`);
+app.listen(Number(PORT), HOST, () => {
+	console.log(`Server running on http://${HOST}:${PORT}`);
 });

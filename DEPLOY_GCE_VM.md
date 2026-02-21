@@ -145,6 +145,7 @@ Create an env file (example):
 
 ```bash
 sudo tee /etc/gback.env > /dev/null <<'EOF'
+HOST=127.0.0.1
 PORT=4000
 EOF
 
