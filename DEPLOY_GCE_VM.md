@@ -104,29 +104,14 @@ sudo sysctl -w net.ipv4.ip_local_port_range="10240 65535"
 
 Option A (clone from GitHub):
 
-Important:
-
-- If you run `git clone <repo>` **without** a trailing dot, Git creates a folder (example: `/opt/gback/Backend`). You must `cd` into it.
-- `npm ci` requires `package-lock.json` to exist.
-
 ```bash
 sudo mkdir -p /opt/gback
 sudo chown $USER:$USER /opt/gback
 
 cd /opt/gback
-
-# Option 1 (recommended): clone into current directory
 git clone <YOUR_REPO_URL> .
 
-# Option 2: clone into a folder (matches your example output)
-# git clone <YOUR_REPO_URL>
-# cd Backend
-
-# Install dependencies
 npm ci --omit=dev
-
-# If `npm ci` fails for any reason, use:
-# npm install --omit=dev
 
 # systemd service runs as www-data (default template)
 sudo chown -R www-data:www-data /opt/gback
@@ -145,7 +130,6 @@ Create an env file (example):
 
 ```bash
 sudo tee /etc/gback.env > /dev/null <<'EOF'
-HOST=127.0.0.1
 PORT=4000
 EOF
 
@@ -210,57 +194,11 @@ This gives:
 
 ## 9) HTTPS (optional but recommended)
 
-### Recommended (real users): Domain + Let’s Encrypt
-
-For a trusted certificate (works in Android APK without special settings), you must have a **domain name** pointing to this VM IP.
-
-High level:
-
-1. Reserve a **static external IP** in GCP
-2. Point `A` record (domain) → VM IP
-3. Ensure firewall allows inbound `80` and `443`
-4. Run certbot to issue and install cert
-
 If you have a domain pointed to the VM IP:
 
 ```bash
 sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx
-```
-
-### Temporary (IP only): Self-signed HTTPS (not trusted)
-
-This is only for quick internal testing. Browsers will warn, and many Android apps reject self-signed certs unless you explicitly trust them.
-
-1) Create a self-signed certificate on the VM:
-
-```bash
-sudo mkdir -p /etc/ssl/private
-sudo chmod 700 /etc/ssl/private
-
-sudo openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
-  -keyout /etc/ssl/private/gback-selfsigned.key \
-  -out /etc/ssl/certs/gback-selfsigned.crt \
-  -subj "/CN=34.47.209.138"
-```
-
-2) Enable Nginx SSL config:
-
-```bash
-sudo cp /opt/gback/deploy/nginx/gback-ssl-selfsigned.conf /etc/nginx/sites-available/gback
-sudo ln -sf /etc/nginx/sites-available/gback /etc/nginx/sites-enabled/gback
-sudo rm -f /etc/nginx/sites-enabled/default
-
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-3) Allow inbound `443` in GCP firewall.
-
-Now test:
-
-```bash
-curl -k -i https://34.47.209.138/health
 ```
 
 ## 10) Update / redeploy
