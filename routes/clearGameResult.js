@@ -398,6 +398,150 @@ router.get('/AlluserWithdrawal-add', async (req, res) => {
   }
 });
 
+router.get('/AlluserWithdrawalrejected-add', async (req, res) => {
+  try {
+    const db = getFirestore();
+    const serverTs = admin.firestore.FieldValue.serverTimestamp();
+    const dateId = getYesterdayIstDateId();
+
+    const srcCol = db.collection('todaysWithdrawalReq');
+    const archiveDocRef = db.collection('AlluserWithdrawal').doc(dateId);
+
+    // ✅ Ensure parent date doc exists
+    await archiveDocRef.set(
+      {
+        dateId,
+        sourceCollection: 'todaysWithdrawalReq',
+        createdAt: serverTs,
+      },
+      { merge: true }
+    );
+
+    const PAGE_SIZE = 450;
+    const MAX_BATCH_OPS = 450;
+
+    let lastDoc = null;
+    let batch = db.batch();
+    let opCount = 0;
+    let commits = 0;
+
+    let scanned = 0;
+    let archivedCount = 0;
+    let writtenToUsers = 0;
+    let deletedFromSource = 0;
+    let missingRequestedByUid = 0;
+
+    const flush = async () => {
+      if (opCount === 0) return;
+      await batch.commit();
+      batch = db.batch();
+      opCount = 0;
+      commits++;
+    };
+
+    while (true) {
+      let query = srcCol
+        .where('status', '==', 'rejected')
+        .orderBy(admin.firestore.FieldPath.documentId())
+        .limit(PAGE_SIZE);
+
+      if (lastDoc) {
+        query = query.startAfter(lastDoc);
+      }
+
+      const snapshot = await query.get();
+      if (snapshot.empty) break;
+
+      for (const doc of snapshot.docs) {
+        scanned++;
+
+        const withdrawalId = doc.id;
+        const data = doc.data() || {};
+
+        const requestedByUid = data.requestedByUid
+          ? String(data.requestedByUid)
+          : '';
+
+        const payload = {
+          ...data,
+          withdrawalId,
+          archiveDate: dateId,
+          migratedAt: serverTs,
+        };
+
+        // 1️⃣ Archive
+        const archiveRef = archiveDocRef
+          .collection('userWithdrawalD')
+          .doc(withdrawalId);
+
+        batch.set(archiveRef, payload);
+        opCount++;
+        archivedCount++;
+
+        // 2️⃣ Copy to user
+        if (requestedByUid) {
+          const userRef = db
+            .collection('users')
+            .doc(requestedByUid)
+            .collection('userWithdrawal')
+            .doc(withdrawalId);
+
+          batch.set(userRef, payload, { merge: true });
+          opCount++;
+          writtenToUsers++;
+        } else {
+          missingRequestedByUid++;
+        }
+
+        // 3️⃣ DELETE from source (true move)
+        batch.delete(doc.ref);
+        opCount++;
+        deletedFromSource++;
+
+        if (opCount >= MAX_BATCH_OPS) {
+          await flush();
+        }
+      }
+
+      lastDoc = snapshot.docs[snapshot.docs.length - 1];
+    }
+
+    await flush();
+
+    // ✅ Update summary
+    await archiveDocRef.set(
+      {
+        updatedAt: serverTs,
+        scanned,
+        archivedCount,
+        writtenToUsers,
+        deletedFromSource,
+        missingRequestedByUid,
+        commits,
+      },
+      { merge: true }
+    );
+
+    return res.status(200).json({
+      ok: true,
+      dateId,
+      scanned,
+      archivedCount,
+      writtenToUsers,
+      deletedFromSource,
+      missingRequestedByUid,
+      commits,
+    });
+
+  } catch (err) {
+    console.error('AlluserWithdrawal-add failed:', err);
+    return res.status(500).json({
+      ok: false,
+      message: err.message,
+    });
+  }
+});
+
 
 router.get('/Allmanualdeposite-add', async (req, res) => {
   try {

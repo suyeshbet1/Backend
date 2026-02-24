@@ -32,7 +32,7 @@ router.post('/user/reset-password', async (req, res) => {
       });
     }
 
-    // ✅ Clean phone
+    // ✅ Clean phone (remove +, spaces, etc.)
     const cleanPhone = phone.replace(/\D/g, '');
 
     if (cleanPhone.length < 10) {
@@ -42,37 +42,24 @@ router.post('/user/reset-password', async (req, res) => {
       });
     }
 
-    // ✅ Format Indian phone properly
-    const formattedPhone = cleanPhone.startsWith('91')
-      ? `+${cleanPhone}`
-      : `+91${cleanPhone}`;
+    // ✅ Convert phone to your email format
+    const formattedEmail = cleanPhone.startsWith('91')
+      ? `${cleanPhone}@userapp.com`
+      : `91${cleanPhone}@userapp.com`;
 
-    let uid;
+    let userRecord;
 
     try {
-      // ✅ Try to find user by phone (best practice)
-      const user = await admin.auth().getUserByPhoneNumber(formattedPhone);
-      uid = user.uid;
-
-      await admin.auth().updateUser(uid, {
-        password: String(newPassword),
-      });
-
-      console.log('Password updated for:', formattedPhone);
-
+      // ✅ Find user by email (NOT phone)
+      userRecord = await admin.auth().getUserByEmail(formattedEmail);
     } catch (error) {
-
       if (error.code === 'auth/user-not-found') {
-        console.log('User not found. Creating new user...');
-
-        const newUser = await admin.auth().createUser({
-          phoneNumber: formattedPhone,
-          password: String(newPassword),
+        return res.status(404).json({
+          success: false,
+          message: 'User not found',
         });
-
-        uid = newUser.uid;
       } else {
-        console.error('Firebase Auth Error:', error);
+        console.error('Firebase Lookup Error:', error);
         return res.status(500).json({
           success: false,
           message: error.message,
@@ -80,13 +67,18 @@ router.post('/user/reset-password', async (req, res) => {
       }
     }
 
-    // ✅ Update Firestore document
-    if (uid) {
-      await db.collection('users').doc(uid).set(
-        { isResetpassword: false },
-        { merge: true }
-      );
-    }
+    // ✅ Update password
+    await admin.auth().updateUser(userRecord.uid, {
+      password: String(newPassword),
+    });
+
+    // ✅ Update Firestore flag
+    await db.collection('users').doc(userRecord.uid).set(
+      { isResetpassword: false },
+      { merge: true }
+    );
+
+    console.log('Password updated for:', formattedEmail);
 
     return res.json({
       success: true,
@@ -102,5 +94,4 @@ router.post('/user/reset-password', async (req, res) => {
     });
   }
 });
-
 module.exports = router;
