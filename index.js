@@ -38,7 +38,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
+app.use(express.urlencoded({ extended: true }));
 app.use('/api/user-bets', userBetsRoutes);
 app.use('/api/add-money', addMoneyByGetwayRoutes);
 app.use('/api/user-withdrawal', userWithdrawalRoutes);
