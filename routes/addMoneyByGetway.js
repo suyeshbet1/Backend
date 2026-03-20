@@ -264,4 +264,248 @@ router.get('/AllAddMoneyByGetway', async (req, res) => {
   }
 });
 
+
+
+router.post('/withdrawal-request', async (req, res) => {
+  try {
+    const authHeader =
+      (req.headers.authorization || req.headers.Authorization || '').toString();
+
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1].trim();
+
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid ID token' });
+    }
+
+    const { uid, amount } = req.body;
+
+    if (!decoded || decoded.uid !== uid) {
+      return res.status(403).json({ error: 'Caller UID does not match provided uid' });
+    }
+
+    const numAmount = Number(amount);
+
+    if (!uid || !Number.isFinite(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid payload' });
+    }
+
+    const db = getFirestore();
+    const userRef = db.collection('users').doc(uid);
+
+    await db.runTransaction(async (tx) => {
+
+      const userSnap = await tx.get(userRef);
+      if (!userSnap.exists) throw new Error('User not found');
+
+      const userData = userSnap.data() || {};
+
+      const wallet =
+        typeof userData.wallet === 'number'
+          ? userData.wallet
+          : Number(userData.wallet || 0);
+
+      if (wallet < numAmount) {
+        throw new Error('Insufficient wallet balance');
+      }
+
+      const name = userData.name || null;
+      const phoneNumber = userData.phone || null;
+
+      const bankRef = userRef.collection('bank').doc('details');
+      const bankSnap = await tx.get(bankRef);
+
+      if (!bankSnap.exists) {
+        throw new Error('Bank details not found');
+      }
+
+      const bank = bankSnap.data() || {};
+
+      // ===== IST DATE & TIME =====
+      const now = new Date();
+      const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+      const ist = new Date(utc + 5.5 * 60 * 60000);
+
+      const pad = (n) => String(n).padStart(2, '0');
+
+      const dateStr = `${pad(ist.getDate())}-${pad(
+        ist.getMonth() + 1
+      )}-${ist.getFullYear()}`;
+
+      const hh24 = ist.getHours();
+      const hh12 = ((hh24 + 11) % 12) + 1;
+      const ampm = hh24 >= 12 ? 'PM' : 'AM';
+
+      const timeStr = `${hh12}:${pad(ist.getMinutes())} ${ampm}`;
+
+      const prebalance = wallet;
+      const postbalance = wallet - numAmount;
+
+      const todaysWithdrawalRef = db
+        .collection('todaysWithdrawalReq')
+        .doc();
+
+      tx.set(todaysWithdrawalRef, {
+        withdrawalammount: numAmount,
+        DateofReq: dateStr,
+        TimeofReq: timeStr,
+
+        name,
+        phoneNumber,
+
+        accountNo: bank.accountNo || null,
+        ifsc: bank.ifsc || null,
+        holderName: bank.holderName || null,
+        phone: bank.phone || null,
+        upiId: bank.upiId || null,
+        method: bank.method || null,
+
+        prebalance,
+        postbalance,
+        status: 'pending',
+        requestedByUid: uid,
+
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Deduct wallet
+      tx.update(userRef, {
+        wallet: postbalance,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Update todaymoney
+      const todayMoneyRef = db.collection('todaymoney').doc(dateStr);
+
+      tx.set(
+        todayMoneyRef,
+        {
+          date: dateStr,
+          todaysWithdrawalreq: admin.firestore.FieldValue.increment(1),
+          todayspendingWithdrawalreq: admin.firestore.FieldValue.increment(1),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+    });
+
+    return res.status(200).json({ ok: true });
+
+  } catch (err) {
+    console.error('withdrawal-request error', err);
+    return res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+
+router.post('/send-notification-all-users', async (req, res) => {
+  try {
+
+    const { title, body } = req.body;
+console.log("Project:", admin.app().options.projectId);
+    if (!title || !body) {
+      return res.status(400).json({
+        error: "title and body are required",
+      });
+    }
+
+    const db = getFirestore();
+
+    // Fetch all users
+    const snapshot = await db.collection("users").get();
+console.log(`Fetched ${snapshot.size} users for notification`);
+    if (snapshot.empty) {
+      return res.status(200).json({
+        message: "No users found"
+      });
+    }
+
+    const messages = [];
+
+    snapshot.forEach(doc => {
+      const token = doc.data()?.fcmToken;
+
+      if (typeof token === "string" && token.trim()) {
+        messages.push({
+          token: token.trim(),
+          notification: {
+            title: String(title),
+            body: String(body),
+          },
+          android: {
+            priority: "high",
+            collapseKey: "GAME_STATUS",
+            notification: {
+              tag: "GAME_STATUS",
+              channelId: "game_updates",
+              sound: "default",
+            },
+          },
+        });
+      }
+    });
+
+    if (!messages.length) {
+      return res.status(200).json({
+        message: "No FCM tokens found"
+      });
+    }
+
+    const response = await admin.messaging().sendEach(messages);
+
+    let successCount = 0;
+    let failureCount = 0;
+    const invalidTokens = [];
+
+    response.responses.forEach((r, idx) => {
+      if (r.success) {
+        successCount++;
+      } else {
+        failureCount++;
+
+        if (r.error?.code === "messaging/registration-token-not-registered") {
+          invalidTokens.push(messages[idx].token);
+        }
+      }
+    });
+
+    // Remove invalid tokens
+    if (invalidTokens.length) {
+
+      const userRef = db.collection("users");
+
+      const cleanup = snapshot.docs.map(doc => {
+        if (invalidTokens.includes(doc.data()?.fcmToken)) {
+          return userRef.doc(doc.id).update({
+            fcmToken: admin.firestore.FieldValue.delete(),
+          });
+        }
+        return null;
+      });
+
+      await Promise.all(cleanup.filter(Boolean));
+    }
+
+    return res.status(200).json({
+      success: true,
+      successCount,
+      failureCount,
+    });
+
+  } catch (error) {
+    console.error("Notification failed", error);
+
+    return res.status(500).json({
+      error: "Failed to send notification",
+    });
+  }
+});
 module.exports = router;
