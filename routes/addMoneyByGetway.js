@@ -508,4 +508,298 @@ console.log(`Fetched ${snapshot.size} users for notification`);
     });
   }
 });
+router.post('/run-game-notifications', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    // -----------------------------
+    // Current IST time
+    // -----------------------------
+    const nowIst = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+    );
+
+    const todayStr = `${nowIst.getFullYear()}-${String(
+      nowIst.getMonth() + 1
+    ).padStart(2, '0')}-${String(nowIst.getDate()).padStart(2, '0')}`;
+
+    // -----------------------------
+    // Collect user tokens
+    // -----------------------------
+    const usersSnap = await db.collection('users').get();
+    const tokens = [];
+
+    usersSnap.forEach(doc => {
+      const t = doc.data()?.fcmToken;
+      if (typeof t === 'string' && t.trim()) {
+        tokens.push(t.trim());
+      }
+    });
+
+    if (!tokens.length) {
+      return res.status(200).json({ message: 'No tokens found' });
+    }
+
+    // -----------------------------
+    // Notification sender
+    // -----------------------------
+    const BATCH_SIZE = 500;
+    const GLOBAL_TAG = 'GAME_STATUS';
+
+    const sendBatch = async (batchTokens, payload) => {
+      const messages = batchTokens.map(token => ({
+        token,
+        notification: payload,
+        android: {
+          priority: 'high',
+          collapseKey: GLOBAL_TAG,
+          notification: {
+            tag: GLOBAL_TAG,
+            channelId: "game_updates",
+            sound: 'default',
+          },
+        },
+      }));
+
+      return admin.messaging().sendEach(messages);
+    };
+
+    // -----------------------------
+    // Process games
+    // -----------------------------
+    const gamesSnap = await db.collection('games').get();
+
+    let totalSent = 0;
+
+    for (const gdoc of gamesSnap.docs) {
+      const gRef = db.collection('games').doc(gdoc.id);
+      const data = gdoc.data() || {};
+
+      // ---------- RESULT ----------
+      const rawResult = String(data.result || '').trim();
+
+      if (rawResult && rawResult !== '***-**-***') {
+        const isPartial = rawResult.includes('*');
+
+        const field = isPartial
+          ? 'lastResultOpenNotifiedDate'
+          : 'lastResultFullNotifiedDate';
+
+        // -----------------------------
+        // Transaction (same as Firebase function)
+        // -----------------------------
+        const claimed = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(gRef);
+
+          if (snap.data()?.[field] === todayStr) {
+            return false;
+          }
+
+          tx.update(gRef, { [field]: todayStr });
+          return true;
+        });
+
+        if (claimed) {
+          const payload = {
+            title: data.name || 'Game',
+            body: isPartial
+              ? `Open result: ${rawResult}`
+              : `Result: ${rawResult}`,
+          };
+
+          // Send in batches
+          for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+            const batch = tokens.slice(i, i + BATCH_SIZE);
+            const response = await sendBatch(batch, payload);
+
+            totalSent += response.responses.filter(r => r.success).length;
+          }
+        }
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      totalSent,
+    });
+
+  } catch (err) {
+    console.error('run-game-notifications failed', err);
+
+    return res.status(500).json({
+      error: 'failed',
+    });
+  }
+});
+router.post('/notify-wallet-withdraw', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    const { userId, amount, userName } = req.body || {};
+
+    const amtNumber = Number(amount);
+
+    // -----------------------------
+    // Validation
+    // -----------------------------
+    if (!userId || !amtNumber || Number.isNaN(amtNumber) || amtNumber <= 0) {
+      return res.status(400).json({
+        error: 'userId and positive amount are required',
+      });
+    }
+
+    // -----------------------------
+    // Fetch user
+    // -----------------------------
+    const userRef = db.collection('users').doc(String(userId));
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({
+        error: 'User not found',
+      });
+    }
+
+    const data = userSnap.data() || {};
+    const token = data.fcmToken;
+
+    if (typeof token !== 'string' || !token.trim()) {
+      return res.status(200).json({
+        message: 'User has no FCM token',
+      });
+    }
+
+    // -----------------------------
+    // Prepare notification
+    // -----------------------------
+    const displayName = userName || data.name || '';
+    const amountStr = amtNumber.toString();
+
+    const title = 'Wallet Updated';
+
+    const body = displayName
+      ? `Admin withdrew ${amountStr} from ${displayName}'s wallet.`
+      : `Admin withdrew ${amountStr} from your wallet.`;
+
+    const GLOBAL_TAG = 'GAME_STATUS';
+
+    const message = {
+      token: token.trim(),
+      notification: {
+        title,
+        body,
+      },
+      android: {
+        priority: 'high',
+        collapseKey: GLOBAL_TAG,
+        notification: {
+          tag: GLOBAL_TAG,
+          channelId: 'game_updates',
+          sound: 'default',
+        },
+      },
+    };
+
+    // -----------------------------
+    // Send notification
+    // -----------------------------
+    await admin.messaging().send(message);
+
+    return res.status(200).json({
+      success: true,
+    });
+
+  } catch (error) {
+    console.error('notify-wallet-withdraw failed', error);
+
+    return res.status(500).json({
+      error: 'Failed to send wallet withdraw notification',
+    });
+  }
+});
+router.post('/notify-wallet-deposit', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    const { userId, amount, userName } = req.body || {};
+    const amtNumber = Number(amount);
+
+    // -----------------------------
+    // Validation
+    // -----------------------------
+    if (!userId || !amtNumber || Number.isNaN(amtNumber) || amtNumber <= 0) {
+      return res.status(400).json({
+        error: 'userId and positive amount are required',
+      });
+    }
+
+    // -----------------------------
+    // Fetch user
+    // -----------------------------
+    const userRef = db.collection('users').doc(String(userId));
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({
+        error: 'User not found',
+      });
+    }
+
+    const data = userSnap.data() || {};
+    const token = data.fcmToken;
+
+    if (typeof token !== 'string' || !token.trim()) {
+      return res.status(200).json({
+        message: 'User has no FCM token',
+      });
+    }
+
+    // -----------------------------
+    // Prepare notification
+    // -----------------------------
+    const displayName = userName || data.name || '';
+    const amountStr = amtNumber.toString();
+
+    const title = 'Wallet Updated';
+
+    const body = displayName
+      ? `Admin deposited ${amountStr} into ${displayName}'s wallet.`
+      : `Admin deposited ${amountStr} into your wallet.`;
+
+    const GLOBAL_TAG = 'GAME_STATUS';
+
+    const message = {
+      token: token.trim(),
+      notification: {
+        title,
+        body,
+      },
+      android: {
+        priority: 'high',
+        collapseKey: GLOBAL_TAG,
+        notification: {
+          tag: GLOBAL_TAG,
+          channelId: 'game_updates',
+          sound: 'default',
+        },
+      },
+    };
+
+    // -----------------------------
+    // Send notification
+    // -----------------------------
+    await admin.messaging().send(message);
+
+    return res.status(200).json({
+      success: true,
+    });
+
+  } catch (error) {
+    console.error('notify-wallet-deposit failed', error);
+
+    return res.status(500).json({
+      error: 'Failed to send wallet deposit notification',
+    });
+  }
+});
 module.exports = router;
