@@ -471,6 +471,160 @@ router.post('/singlepanadigitsbets', async (req, res) => {
   }
 });
 
+router.post('/spdptpdigitsbets', async (req, res) => {
+  try {
+    const authHeader = (req.headers.authorization || '').toString();
+
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1].trim();
+    const decoded = await admin.auth().verifyIdToken(idToken);
+
+    const { uid, gameId, gameName, bets } = req.body;
+
+    if (!decoded.uid || decoded.uid !== uid) {
+      return res.status(403).json({ error: 'Caller UID does not match provided uid' });
+    }
+
+    if (!uid || !Array.isArray(bets) || !gameId) {
+      return res.status(400).json({ error: 'Invalid payload' });
+    }
+
+    const db = admin.firestore();
+
+    // ✅ UPDATED: gamecode coming from each bet
+    const parsedBets = bets.map((b) => ({
+      number: String(b.number),
+      points: Number(b.points),
+      game: b.game === 'close' ? 'close' : 'open',
+      gamecode: b.gamecode // fallback if needed
+    }));
+
+   
+
+    const totalAmount = parsedBets.reduce(
+      (sum, b) => sum + (Number.isFinite(b.points) ? b.points : 0),
+      0,
+    );
+
+    const gameRef = db.collection('games').doc(String(gameId));
+    const gameSnap = await gameRef.get();
+
+    if (!gameSnap.exists) {
+      return res.status(400).json({ error: 'Game not found' });
+    }
+
+    const gameData = gameSnap.data() || {};
+    const openTimeStr = gameData.openTime ? String(gameData.openTime) : null;
+    const closeTimeStr = gameData.closeTime ? String(gameData.closeTime) : null;
+
+    const parseTime12h = (t) => {
+      if (!t || typeof t !== 'string') return null;
+
+      const m = t.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (!m) return null;
+
+      let h = parseInt(m[1], 10);
+      const min = parseInt(m[2], 10);
+      const mer = m[3].toUpperCase();
+
+      if (h === 12) h = 0;
+      const hours24 = mer === 'PM' ? h + 12 : h;
+
+      return { hours24, minutes: min };
+    };
+
+    const now = new Date();
+    const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+    const istOffsetMs = (5 * 60 + 30) * 60000;
+    const nowIst = new Date(utc + istOffsetMs);
+
+    const isAfterTimeStr = (timeStr) => {
+      const parsed = parseTime12h(timeStr);
+      if (!parsed) return false;
+
+      const target = new Date(nowIst);
+      target.setHours(parsed.hours24, parsed.minutes, 0, 0);
+
+      return nowIst.getTime() > target.getTime();
+    };
+
+    const hasOpen = parsedBets.some((b) => b.game === 'open');
+    if (hasOpen && openTimeStr && isAfterTimeStr(openTimeStr)) {
+      return res.status(400).json({ error: 'your request is delayed for open bit' });
+    }
+
+    const hasClose = parsedBets.some((b) => b.game === 'close');
+    if (hasClose && closeTimeStr && isAfterTimeStr(closeTimeStr)) {
+      return res.status(400).json({ error: 'your request is delayed for close bit' });
+    }
+
+    const userRef = db.collection('users').doc(uid);
+
+    await db.runTransaction(async (tx) => {
+      const userSnap = await tx.get(userRef);
+      if (!userSnap.exists) {
+        throw new Error('User not found');
+      }
+
+      const userData = userSnap.data() || {};
+      const wallet = Number(userData.wallet || 0);
+
+      if (wallet < totalAmount) {
+        throw new Error('Insufficient wallet balance');
+      }
+
+      let currBalance = wallet;
+      const todaysBetsRef = db.collection('todaysBets');
+      const serverTs = admin.firestore.FieldValue.serverTimestamp();
+
+      for (const b of parsedBets) {
+        const amount = Number.isFinite(b.points) ? b.points : 0;
+        const preBalance = currBalance;
+        const postBalance = currBalance - amount;
+
+        const betDoc = {
+          amount,
+          gameId: String(gameId),
+          gameName: gameName || null,
+          gamecode: b.gamecode, // ✅ from bet
+          open: b.game === 'open',
+          close: b.game === 'close',
+          SPnumber: String(b.number),
+          username: userData.name || null,
+          userId: uid,
+          mobile: userData.phone || null,
+          resultstatus: 'pending',
+          inChart: false,
+          createdAt: serverTs,
+          preBalance,
+          postBalance,
+        };
+
+        tx.set(todaysBetsRef.doc(), betDoc);
+        currBalance = postBalance;
+      }
+
+      tx.update(userRef, {
+        wallet: currBalance,
+        updatedAt: serverTs,
+      });
+    });
+
+    return res.status(200).json({
+      ok: true,
+      deducted: totalAmount,
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      error: err.message || 'Internal Server Error',
+    });
+  }
+});
+
 router.post('/doublepanadigitsbets', async (req, res) => {
   try {
     const authHeader = (req.headers.authorization || '').toString();

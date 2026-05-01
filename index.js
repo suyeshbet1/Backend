@@ -48,7 +48,9 @@ app.use('/api/game-chart', gameChartRoutes);
 app.use('/api', userResetPasswordRoutes);
 app.use('/api', clearGameResultRoutes);
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+	await admin.firestore().collection('userData').doc('stats').get()
+
 	res.json({ status: 'ok' });
 });
 

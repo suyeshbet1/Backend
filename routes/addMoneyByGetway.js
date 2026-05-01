@@ -55,7 +55,7 @@ router.post('/create-add-money-order', async (req, res) => {
       });
 
     // 🔹 EKQR API call
-    const EKQR_KEY = "b86c32c1-982f-48c0-b7cb-2aa2e8209e9d";
+    const EKQR_KEY = "9f9a1237-6089-47a5-b225-c34e060bbeb3";
 
     const payload = {
       key: EKQR_KEY,
@@ -799,6 +799,82 @@ router.post('/notify-wallet-deposit', async (req, res) => {
 
     return res.status(500).json({
       error: 'Failed to send wallet deposit notification',
+    });
+  }
+});
+router.get('/recalculateUserStats', async (req, res) => {
+  try {
+    const db = getFirestore();
+
+    const PAGE_SIZE = 500;
+    let lastDoc = null;
+
+    let total = 0;
+    let active = 0;
+    let zero = 0;
+    let walletSum = 0;
+
+    let hasMore = true;
+
+    while (hasMore) {
+      let query = db.collection("users")
+        .orderBy("__name__")
+        .limit(PAGE_SIZE);
+
+      if (lastDoc) {
+        query = query.startAfter(lastDoc);
+      }
+
+      const snapshot = await query.get();
+
+      if (snapshot.empty) {
+        hasMore = false;
+        break;
+      }
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+
+        const wallet = Number(data?.wallet || 0);
+
+        total++;
+        walletSum += wallet;
+
+        if (wallet === 0) zero++;
+        else if (wallet > 0) active++;
+      }
+
+      lastDoc = snapshot.docs[snapshot.docs.length - 1];
+
+      console.log(`Processed: ${total} users`);
+
+      if (snapshot.size < PAGE_SIZE) {
+        hasMore = false;
+      }
+    }
+
+    // ✅ Save stats (single write)
+    await db.collection("userData").doc("stats").set({
+      Totaluser: total,
+      Activeuser: active,
+      ZeroAmmount: zero,
+      Walletsum: walletSum,
+      updatedAt: new Date(),
+    }, { merge: true });
+
+    return res.status(200).json({
+      message: "Stats recalculated successfully",
+      totalUsers: total,
+      activeUsers: active,
+      zeroUsers: zero,
+      walletSum,
+    });
+
+  } catch (error) {
+    console.error("Stats calculation error:", error);
+
+    return res.status(500).json({
+      error: "Failed to calculate stats",
     });
   }
 });
